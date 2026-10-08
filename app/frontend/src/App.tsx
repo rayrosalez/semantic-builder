@@ -14,6 +14,7 @@ import { Graph, type GraphNode } from "./components/Graph";
 import { HistoryPanel, type HistoryTarget } from "./components/HistoryPanel";
 import { Overview, TableEditor } from "./components/Inspector";
 import { ReviewQueue } from "./components/ReviewQueue";
+import { About } from "./components/About";
 import { Avatar, Info } from "./components/bits";
 import { healthColor, palette } from "./theme";
 
@@ -40,6 +41,12 @@ export default function App() {
   const [counts, setCounts] = useState<Record<string, number>>({});
   const [refreshKey, setRefreshKey] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
+  const [hoverChild, setHoverChild] = useState<string | null>(null);
+  const [view, setView] = useState<"explore" | "about">(() => (location.hash === "#about" ? "about" : "explore"));
+
+  useEffect(() => {
+    history.replaceState(null, "", view === "about" ? "#about" : location.pathname);
+  }, [view]);
   const [error, setError] = useState<string | null>(null);
   const toastRef = useRef<HTMLDivElement>(null);
   const autoPicked = useRef(false);
@@ -185,9 +192,12 @@ export default function App() {
     // Fade everything that isn't on the selected path or directly under it.
     const focusId = out.find((n) => n.focus)?.id;
     if (focusId)
-      for (const n of out) n.dim = !(n.focus || n.onPath || n.parentId === focusId);
+      for (const n of out) {
+        n.dim = !(n.focus || n.onPath || n.parentId === focusId);
+        n.highlight = n.parentId === focusId && n.label === hoverChild;
+      }
     return out;
-  }, [catalogs, schemas, tables, detail, path, historyCol]);
+  }, [catalogs, schemas, tables, detail, path, historyCol, hoverChild]);
 
   function select(n: GraphNode) {
     setQueueOpen(false);
@@ -258,7 +268,11 @@ export default function App() {
           target={target}
           childNoun="tables"
           children={ts.map((t) => ({ name: t.name, coverage: t.coverage, open_changes: t.open_changes, sub: `${t.column_count} cols` }))}
-          onPick={(t) => setPath({ ...path, table: t })}
+          onPick={(t) => {
+            setHoverChild(null);
+            setPath({ ...path, table: t });
+          }}
+          onHover={setHoverChild}
           onClose={goUp}
         />
       );
@@ -276,7 +290,11 @@ export default function App() {
           target={target}
           childNoun="schemas"
           children={ss.map((s) => ({ name: s.name, coverage: s.coverage, open_changes: s.open_changes, sub: `${s.table_count} tables` }))}
-          onPick={(s) => setPath({ catalog: path.catalog, schema: s })}
+          onPick={(s) => {
+            setHoverChild(null);
+            setPath({ catalog: path.catalog, schema: s });
+          }}
+          onHover={setHoverChild}
           onClose={goUp}
         />
       );
@@ -289,6 +307,8 @@ export default function App() {
   return (
     <div className="app">
       <TopBar
+        view={view}
+        onView={setView}
         title={config?.title ?? "Semantic Builder"}
         path={path}
         me={me}
@@ -298,8 +318,12 @@ export default function App() {
           setHistoryCol(undefined);
           setPath(p);
         }}
-        onQueue={() => setQueueOpen((o) => !o)}
+        onQueue={() => {
+          setView("explore");
+          setQueueOpen((o) => !o);
+        }}
         onJump={(c, s, t) => {
+          setView("explore");
           setQueueOpen(false);
           setHistoryCol(undefined);
           setPath({ catalog: c, schema: s, table: t });
@@ -310,7 +334,14 @@ export default function App() {
         }}
       />
 
-      <main className="stage">
+      {view === "about" && (
+        <main className="stage">
+          <div className="about-scroll">
+            <About config={config} />
+          </div>
+        </main>
+      )}
+      <main className="stage" style={view === "about" ? { display: "none" } : undefined}>
         <Graph
           nodes={nodes}
           target={target}
@@ -364,6 +395,8 @@ function BrandMark() {
 }
 
 function TopBar(props: {
+  view: "explore" | "about";
+  onView: (v: "explore" | "about") => void;
   title: string;
   path: Path;
   me: Me | null;
@@ -374,7 +407,7 @@ function TopBar(props: {
   onJump: (c: string, s: string, t: string) => void;
   onRefresh: () => void;
 }) {
-  const { title, path, me, pending, queueOpen, onCrumb, onQueue, onJump, onRefresh } = props;
+  const { view, onView, title, path, me, pending, queueOpen, onCrumb, onQueue, onJump, onRefresh } = props;
   const crumbs: { label: string; p: Path }[] = [];
   if (path.catalog) crumbs.push({ label: path.catalog, p: { catalog: path.catalog } });
   if (path.schema) crumbs.push({ label: path.schema, p: { catalog: path.catalog, schema: path.schema } });
@@ -382,11 +415,25 @@ function TopBar(props: {
 
   return (
     <header className="topbar">
-      <div className="brand" onClick={() => onCrumb({})}>
+      <div
+        className="brand"
+        onClick={() => {
+          onView("explore");
+          onCrumb({});
+        }}
+      >
         <BrandMark />
         <span>{title}</span>
       </div>
-      <nav className="crumbs mono">
+      <nav className="views">
+        <button className={view === "explore" ? "on" : ""} onClick={() => onView("explore")}>
+          Explore
+        </button>
+        <button className={view === "about" ? "on" : ""} onClick={() => onView("about")}>
+          About
+        </button>
+      </nav>
+      <nav className="crumbs mono" style={view === "about" ? { visibility: "hidden" } : undefined}>
         {crumbs.map((c, i) => (
           <span key={i}>
             <span className="sep">/</span>

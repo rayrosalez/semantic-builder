@@ -262,6 +262,7 @@ export function Overview({
   children,
   childNoun,
   onPick,
+  onHover,
   onClose,
 }: {
   kind: "catalog" | "schema";
@@ -273,6 +274,7 @@ export function Overview({
   children: Child[];
   childNoun: string;
   onPick: (name: string) => void;
+  onHover: (name: string | null) => void;
   onClose: () => void;
 }) {
   const ref = useSlideIn<HTMLDivElement>("left", [title]);
@@ -300,7 +302,13 @@ export function Overview({
       </div>
       <div className="panel-body">
         {sorted.map((c) => (
-          <button key={c.name} className="row-btn" onClick={() => onPick(c.name)}>
+          <button
+            key={c.name}
+            className="row-btn"
+            onClick={() => onPick(c.name)}
+            onMouseEnter={() => onHover(c.name)}
+            onMouseLeave={() => onHover(null)}
+          >
             <span className="dot" style={{ background: healthColor[health(c.coverage, target)] }} />
             <span className="row-name mono">{c.name}</span>
             {c.open_changes > 0 && <span className="mini-badge">{c.open_changes}</span>}

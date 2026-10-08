@@ -1,18 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  forceCollide,
-  forceLink,
-  forceManyBody,
-  forceSimulation,
-  forceX,
-  forceY,
-  type Simulation,
-  type SimulationLinkDatum,
-  type SimulationNodeDatum,
-} from "d3-force";
 import { select } from "d3-selection";
 import { zoom, zoomIdentity, type ZoomBehavior } from "d3-zoom";
-import { animate, stagger } from "animejs";
+import { animate, stagger, type JSAnimation } from "animejs";
+import { ARC_LIMIT, layout, type Point } from "./layout";
 import { health, healthColor, healthLabel, palette, pct } from "../theme";
 
 export type Kind = "catalog" | "schema" | "table" | "column";
@@ -29,16 +19,8 @@ export interface GraphNode {
   onPath: boolean;
   focus: boolean;
   dim?: boolean;
+  highlight?: boolean;
 }
-
-interface SimNode extends SimulationNodeDatum {
-  id: string;
-  r: number;
-  kind: Kind;
-}
-type SimLink = SimulationLinkDatum<SimNode> & { kind: Kind };
-
-const LINK_DISTANCE: Record<Kind, number> = { catalog: 0, schema: 190, table: 120, column: 105 };
 
 export function radius(n: Pick<GraphNode, "kind" | "childCount">): number {
   const c = Math.sqrt(Math.max(n.childCount, 0));
@@ -66,8 +48,10 @@ export function Graph({ nodes, target, insets, onSelect, onBackground }: Props) 
   const svgRef = useRef<SVGSVGElement>(null);
   const gRef = useRef<SVGGElement>(null);
   const zoomRef = useRef<ZoomBehavior<SVGSVGElement, unknown> | null>(null);
-  const simRef = useRef<Simulation<SimNode, SimLink> | null>(null);
-  const pos = useRef(new Map<string, { x: number; y: number }>());
+  const anim = useRef<JSAnimation | null>(null);
+  const camAnim = useRef<JSAnimation | null>(null);
+  const pos = useRef(new Map<string, Point>()); // where each node is drawn now
+  const goal = useRef(new Map<string, Point>()); // where the layout wants it
   const nodeEls = useRef(new Map<string, SVGGElement>());
   const linkEls = useRef(new Map<string, SVGLineElement>());
   const seen = useRef(new Set<string>());
@@ -93,58 +77,41 @@ export function Graph({ nodes, target, insets, onSelect, onBackground }: Props) 
     svg.call(z.transform, zoomIdentity.translate(width / 2, height / 2));
   }, []);
 
-  // Rebuild the simulation whenever the visible node set changes, keeping
-  // existing positions so the graph grows instead of re-shuffling.
+  // Re-layout whenever the visible node set changes and glide every node from
+  // where it is to its new spot (new nodes grow out of their parent).
   useEffect(() => {
-    const byId = new Map(nodes.map((n) => [n.id, n]));
-    const simNodes: SimNode[] = nodes.map((n) => {
-      const prev = pos.current.get(n.id);
-      const parent = n.parentId ? pos.current.get(n.parentId) : undefined;
-      const start = prev ?? {
-        x: (parent?.x ?? 0) + (Math.random() - 0.5) * 40,
-        y: (parent?.y ?? 0) + (Math.random() - 0.5) * 40,
-      };
-      return { id: n.id, kind: n.kind, r: radius(n), x: start.x, y: start.y };
-    });
-    const links: SimLink[] = nodes
-      .filter((n) => n.parentId && byId.has(n.parentId))
-      .map((n) => ({ source: n.parentId!, target: n.id, kind: n.kind }));
-
-    simRef.current?.stop();
-    const sim = forceSimulation<SimNode, SimLink>(simNodes)
-      .force(
-        "link",
-        forceLink<SimNode, SimLink>(links)
-          .id((d) => d.id)
-          .distance((l) => LINK_DISTANCE[l.kind] + (l.target as SimNode).r)
-          .strength(0.7),
-      )
-      .force("charge", forceManyBody<SimNode>().strength((d) => -30 - d.r * 9))
-      .force("collide", forceCollide<SimNode>((d) => d.r + (d.kind === "column" ? 26 : 30)).strength(0.9))
-      .force("x", forceX<SimNode>(0).strength(0.03))
-      .force("y", forceY<SimNode>(0).strength(0.03))
-      .alpha(0.9)
-      .alphaDecay(0.035);
-
-    sim.on("tick", () => {
-      for (const n of simNodes) {
-        pos.current.set(n.id, { x: n.x!, y: n.y! });
-        nodeEls.current.get(n.id)?.setAttribute("transform", `translate(${n.x},${n.y})`);
+    const target = layout(nodes, radius);
+    goal.current = target;
+    const from = new Map<string, Point>();
+    for (const n of nodes) {
+      const prev = pos.current.get(n.id) ?? (n.parentId ? pos.current.get(n.parentId) : undefined);
+      from.set(n.id, prev ?? target.get(n.id)!);
+    }
+    const draw = (t: number) => {
+      for (const n of nodes) {
+        const a = from.get(n.id)!;
+        const b = target.get(n.id)!;
+        const p = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t };
+        pos.current.set(n.id, p);
+        nodeEls.current.get(n.id)?.setAttribute("transform", `translate(${p.x},${p.y})`);
       }
-      for (const l of links) {
-        const s = l.source as SimNode;
-        const t = l.target as SimNode;
-        const el = linkEls.current.get(t.id);
-        if (el) {
+      for (const n of nodes) {
+        if (!n.parentId) continue;
+        const el = linkEls.current.get(n.id);
+        const s = pos.current.get(n.parentId);
+        const e = pos.current.get(n.id);
+        if (el && s && e) {
           el.setAttribute("x1", String(s.x));
           el.setAttribute("y1", String(s.y));
-          el.setAttribute("x2", String(t.x));
-          el.setAttribute("y2", String(t.y));
+          el.setAttribute("x2", String(e.x));
+          el.setAttribute("y2", String(e.y));
         }
       }
-    });
-    sim.on("end", () => fitToFocus());
-    simRef.current = sim;
+    };
+    anim.current?.pause();
+    const prog = { t: 0 };
+    draw(0);
+    anim.current = animate(prog, { t: 1, duration: 750, ease: "outExpo", onUpdate: () => draw(prog.t) });
 
     // Entry animation for nodes we haven't drawn before.
     const fresh = nodes.filter((n) => !seen.current.has(n.id));
@@ -162,8 +129,7 @@ export function Graph({ nodes, target, insets, onSelect, onBackground }: Props) 
       });
     }
 
-    const fit = window.setTimeout(() => fitToFocus(), 650);
-    return () => window.clearTimeout(fit);
+    fitToFocus();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [nodes.map((n) => n.id).join("|")]);
 
@@ -177,7 +143,7 @@ export function Graph({ nodes, target, insets, onSelect, onBackground }: Props) 
       ? nodes.filter((n) => n.id === focus.id || n.parentId === focus.id)
       : nodes.filter((n) => n.kind === "catalog");
     const pts = frame
-      .map((n) => ({ p: pos.current.get(n.id), r: radius(n) + 30 }))
+      .map((n) => ({ p: goal.current.get(n.id), r: radius(n) + 30 }))
       .filter((x) => x.p) as { p: { x: number; y: number }; r: number }[];
     if (!pts.length) return;
     const x0 = Math.min(...pts.map((d) => d.p.x - d.r));
@@ -192,7 +158,8 @@ export function Graph({ nodes, target, insets, onSelect, onBackground }: Props) 
     const cy = 60 + availH / 2;
     const to = { x: cx - k * ((x0 + x1) / 2), y: cy - k * ((y0 + y1) / 2), k };
     const cam = { ...transform.current };
-    animate(cam, {
+    camAnim.current?.pause();
+    camAnim.current = animate(cam, {
       ...to,
       duration: 900,
       ease: "inOutQuart",
@@ -208,7 +175,15 @@ export function Graph({ nodes, target, insets, onSelect, onBackground }: Props) 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [insets.left, insets.right]);
 
-  const linked = nodes.filter((n) => n.parentId && nodes.some((m) => m.id === n.parentId));
+  // Paint order: faded context first, the selected chain last (on top).
+  const rank = (n: GraphNode) => (n.highlight ? 3 : n.dim ? 0 : n.focus || n.onPath ? 2 : 1);
+  const ordered = [...nodes].sort((a, b) => rank(a) - rank(b));
+  const linked = ordered.filter((n) => n.parentId && nodes.some((m) => m.id === n.parentId));
+  // Packed clusters (big groups) get faint links and hover-only labels; the
+  // side panel lists them by name.
+  const siblings = new Map<string | null, number>();
+  for (const n of nodes) siblings.set(n.parentId, (siblings.get(n.parentId) ?? 0) + 1);
+  const quiet = (n: GraphNode) => !n.focus && !n.onPath && (siblings.get(n.parentId) ?? 0) > ARC_LIMIT;
 
   return (
     <div className="graph-wrap">
@@ -241,15 +216,16 @@ export function Graph({ nodes, target, insets, onSelect, onBackground }: Props) 
                   if (el) linkEls.current.set(n.id, el);
                   else linkEls.current.delete(n.id);
                 }}
-                className={`link ${n.onPath || n.focus ? "on-path" : ""} ${n.dim ? "dim" : ""}`}
+                className={`link ${n.onPath || n.focus ? "on-path" : ""} ${n.dim ? "dim" : ""} ${quiet(n) ? "packed" : ""}`}
               />
             ))}
           </g>
           <g className="nodes">
-            {nodes.map((n) => (
+            {ordered.map((n) => (
               <NodeGlyph
                 key={n.id}
                 n={n}
+                quiet={quiet(n)}
                 target={target}
                 register={(el) => {
                   if (el) {
@@ -295,12 +271,14 @@ export function Graph({ nodes, target, insets, onSelect, onBackground }: Props) 
 
 function NodeGlyph({
   n,
+  quiet,
   target,
   register,
   onClick,
   onHover,
 }: {
   n: GraphNode;
+  quiet: boolean;
   target: number;
   register: (el: SVGGElement | null) => void;
   onClick: () => void;
@@ -311,8 +289,7 @@ function NodeGlyph({
   const color = n.kind === "column" && n.open > 0 ? palette.brown : healthColor[h];
   const ring = r + (n.kind === "column" ? 3 : 5);
   const circ = 2 * Math.PI * ring;
-  const showLabel = true;
-  const cls = ["node", `kind-${n.kind}`, n.focus ? "focus" : "", n.onPath ? "on-path" : "", n.dim ? "dim" : "", h];
+  const cls = ["node", `kind-${n.kind}`, n.focus ? "focus" : "", n.onPath ? "on-path" : "", n.dim ? "dim" : "", quiet ? "quiet" : "", n.highlight ? "hl" : "", h];
 
   return (
     <g
@@ -352,11 +329,9 @@ function NodeGlyph({
           </g>
         )}
       </g>
-      {showLabel && (
-        <text className="label" y={ring + 16}>
-          {n.label}
-        </text>
-      )}
+      <text className="label" y={ring + 16}>
+        {n.label}
+      </text>
     </g>
   );
 }
