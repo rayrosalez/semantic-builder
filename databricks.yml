@@ -1,0 +1,94 @@
+# Semantic Builder — Databricks Asset Bundle
+#
+# Everything environment-specific is a variable. To stand this up somewhere new,
+# copy the `customer` target, fill in its variables, and:
+#
+#   databricks bundle deploy -t <target> -p <profile>
+#   databricks bundle run semantic_builder_setup -t <target> -p <profile>   # queue table + grants
+#   databricks bundle run semantic_builder -t <target> -p <profile>         # start the app
+#
+# Optional sample data:  databricks bundle run semantic_builder_seed_demo -t <target>
+
+bundle:
+  name: semantic-builder
+
+variables:
+  app_name:
+    description: Databricks App name (lowercase, dashes)
+    default: semantic-builder
+  warehouse_id:
+    description: SQL warehouse the app uses to read information_schema and the queue
+  scope:
+    description: >-
+      What business users can see and edit. Comma-separated catalog | catalog.schema |
+      catalog.schema_glob* entries, e.g. "finance, ops.claims_*"
+  staging_catalog:
+    description: Catalog that holds the change queue
+  staging_schema:
+    description: Schema that holds the change queue (created by the setup job)
+    default: semantic_builder
+  approvers:
+    description: Comma-separated approver emails and/or workspace group names
+  allow_self_approval:
+    description: Whether an approver may approve their own requests ("true"/"false")
+    default: "false"
+  coverage_target:
+    description: Share of documented fields (0-1) at which a table stops "needing attention"
+    default: "0.8"
+  apply_cron:
+    description: Quartz cron for the apply job (default every 15 minutes)
+    default: "0 0/15 * * * ?"
+  apply_timezone:
+    default: America/Los_Angeles
+  apply_pause_status:
+    description: UNPAUSED or PAUSED
+    default: UNPAUSED
+  check_writers:
+    description: Defer changes while a job/pipeline that writes the table is running ("true"/"false")
+    default: "true"
+  demo_catalog:
+    description: Catalog for the optional sample estate (seed job only)
+    default: ""
+  demo_prefix:
+    description: Schema-name prefix for the optional sample estate
+    default: fa_
+
+include:
+  - resources/*.yml
+
+sync:
+  exclude:
+    - "**/node_modules"
+    - "**/.venv"
+    - "**/__pycache__"
+    - "_scratch"
+    - "app/frontend/src"
+    - "app/frontend/public"
+
+targets:
+  # Reference deployment (fe-vm-ray-serverless): sample estate in ray_serverless_catalog.
+  dev:
+    default: true
+    workspace:
+      host: https://fevm-ray-serverless.cloud.databricks.com
+    variables:
+      warehouse_id: 4d3aa3611e72097d
+      scope: ray_serverless_catalog.fa_*
+      staging_catalog: ray_serverless_catalog
+      approvers: ray.rosalez@databricks.com
+      allow_self_approval: "true"
+      demo_catalog: ray_serverless_catalog
+
+  # Template for a customer workspace. Fill in the <...> values.
+  customer:
+    workspace:
+      host: https://<WORKSPACE_HOST>
+    variables:
+      warehouse_id: <SQL_WAREHOUSE_ID>
+      scope: <CATALOG>[,<CATALOG.SCHEMA>...]
+      staging_catalog: <CATALOG_FOR_QUEUE>
+      approvers: <data-stewards-group>
+    # Recommended: run the apply job as a service principal that has MODIFY on the
+    # in-scope tables, instead of the deploying user.
+    # run_as:
+    #   service_principal_name: <APPLY_SP_APPLICATION_ID>

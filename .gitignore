@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Node (app/frontend/dist IS committed so the bundle deploys without a Node build)
+node_modules/
+
+# Databricks bundle state
+.databricks/
+
+# Local scratch / secrets
+_scratch/
+.env
+*.local
+.DS_Store

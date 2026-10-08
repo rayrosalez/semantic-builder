@@ -1,0 +1,34 @@
+resources:
+  apps:
+    semantic_builder:
+      name: ${var.app_name}
+      description: "Semantic Builder: business-friendly editing of Unity Catalog descriptions, with review and safe apply."
+      source_code_path: ../app
+      resources:
+        - name: sql-warehouse
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: CAN_USE
+        - name: apply-job
+          job:
+            id: ${resources.jobs.semantic_builder_apply.id}
+            permission: CAN_MANAGE_RUN
+      config:
+        command: ["python", "-m", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+        env:
+          - name: DATABRICKS_WAREHOUSE_ID
+            value_from: sql-warehouse
+          - name: SB_APPLY_JOB_ID
+            value_from: apply-job
+          - name: SB_SCOPE
+            value: ${var.scope}
+          - name: SB_STAGING_CATALOG
+            value: ${var.staging_catalog}
+          - name: SB_STAGING_SCHEMA
+            value: ${var.staging_schema}
+          - name: SB_APPROVERS
+            value: ${var.approvers}
+          - name: SB_ALLOW_SELF_APPROVAL
+            value: ${var.allow_self_approval}
+          - name: SB_COVERAGE_TARGET
+            value: ${var.coverage_target}

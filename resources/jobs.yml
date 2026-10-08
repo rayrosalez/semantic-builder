@@ -1,0 +1,61 @@
+resources:
+  jobs:
+    semantic_builder_apply:
+      name: semantic-builder-apply
+      description: >-
+        Applies approved description changes to Unity Catalog. Defers tables whose
+        writers are running, batches each table's edits into one commit, and records
+        the outcome in the change queue.
+      max_concurrent_runs: 1
+      schedule:
+        quartz_cron_expression: ${var.apply_cron}
+        timezone_id: ${var.apply_timezone}
+        pause_status: ${var.apply_pause_status}
+      tasks:
+        - task_key: apply_changes
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/apply_changes.py
+            parameters:
+              - --staging_catalog=${var.staging_catalog}
+              - --staging_schema=${var.staging_schema}
+              - --check_writers=${var.check_writers}
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+
+    semantic_builder_setup:
+      name: semantic-builder-setup
+      description: Creates the change queue table and grants the app's service principal access.
+      tasks:
+        - task_key: setup
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/setup.py
+            parameters:
+              - --staging_catalog=${var.staging_catalog}
+              - --staging_schema=${var.staging_schema}
+              - --app_sp=${resources.apps.semantic_builder.service_principal_client_id}
+              - --scope=${var.scope}
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+
+    semantic_builder_seed_demo:
+      name: semantic-builder-seed-demo
+      description: Optional. Builds (or resets) a sample title-insurance estate to explore in the app.
+      tasks:
+        - task_key: seed
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/seed_demo.py
+            parameters:
+              - --catalog=${var.demo_catalog}
+              - --prefix=${var.demo_prefix}
+              - --warehouse_id=${var.warehouse_id}
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
