@@ -22,7 +22,7 @@ A Databricks App that lets business users document their data in Unity Catalog w
 1. **Edit.** A user changes a table or column description and submits it, optionally with a note. The app writes a `PENDING` row to `<staging_catalog>.<staging_schema>.metadata_change_requests` recording the requester (from their app sign-in), the time, the previous value and the proposed value. The app never runs DDL itself. A newer request for the same field supersedes the older one.
 2. **Review.** Approvers, listed by email or workspace group, approve or reject requests in bulk with an optional note. Approving your own requests is disabled unless `allow_self_approval` is true.
 3. **Apply.** The `semantic-builder-apply` job takes the approved changes and, for each table:
-   - finds the jobs and pipelines that wrote to the table in the last 30 days (`system.access.table_lineage`);
+   - finds the table's writers two ways: jobs and pipelines in `system.access.table_lineage` (last 30 days), and the job behind each recent commit in the table's Delta history (`DESCRIBE HISTORY`). Lineage can lag by minutes and skips writes that have no source table; Delta history is immediate. The apply job ignores its own commits;
    - **defers** the change if any of them is running right now and records why ("Waiting: job 123 is running"). An approver can override this with *Apply even if busy*;
    - applies all of the table's column edits in **one commit** (`ALTER TABLE … ALTER COLUMN a COMMENT …, b COMMENT …`) and the table description in one more, retrying on commit conflicts;
    - writes the outcome back to the queue: `APPLIED`, `FAILED` (with the error, and a *Retry* button), or a deferral note.
@@ -61,7 +61,7 @@ You need a SQL warehouse, a catalog you can create a schema in (for the queue), 
 
 3. **Permissions**
    - *App service principal* (granted by the setup job): `USE CATALOG` + `BROWSE` on each in-scope catalog, and read/write on the queue schema. The app only reads metadata and writes to the queue.
-   - *Apply job identity* (the deployer by default): needs `MODIFY` on the in-scope tables (or ownership), plus `SELECT` on `system.access.table_lineage` for the writer check. In production, set `run_as` on the target to a dedicated service principal. Without lineage access the job still works; it just skips the writer check and relies on retries.
+   - *Apply job identity* (the deployer by default): needs `MODIFY` on the in-scope tables (or ownership), plus `SELECT` on `system.access.table_lineage` for the writer check. In production, set `run_as` on the target to a dedicated service principal. Without lineage access the job still works, using Delta history alone plus retries.
    - If the setup job can't grant on a catalog it doesn't own, it prints the failed `GRANT` statements so a catalog owner can run them.
 
 ## Try it with sample data

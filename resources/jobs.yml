@@ -20,6 +20,7 @@ resources:
               - --staging_catalog=${var.staging_catalog}
               - --staging_schema=${var.staging_schema}
               - --check_writers=${var.check_writers}
+              - --self_job_id={{job.id}}
       environments:
         - environment_key: default
           spec:

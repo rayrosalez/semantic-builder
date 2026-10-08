@@ -31,6 +31,7 @@ p.add_argument("--staging_catalog", required=True)
 p.add_argument("--staging_schema", required=True)
 p.add_argument("--check_writers", default="true")
 p.add_argument("--lineage_lookback_days", default="30")
+p.add_argument("--self_job_id", default="")
 args = p.parse_args()
 
 spark = SparkSession.builder.getOrCreate()
@@ -38,6 +39,7 @@ w = WorkspaceClient()
 QUEUE = f"`{args.staging_catalog}`.`{args.staging_schema}`.`metadata_change_requests`"
 CHECK_WRITERS = args.check_writers.lower() == "true"
 LOOKBACK = int(args.lineage_lookback_days)
+SELF_JOB_ID = args.self_job_id.strip()
 
 DELTA_TYPES = {"MANAGED", "EXTERNAL"}
 PIPELINE_TYPES = {"MATERIALIZED_VIEW", "STREAMING_TABLE"}
@@ -123,8 +125,26 @@ if CHECK_WRITERS and by_table:
         ).collect()
         for r in lineage:
             writers[r.t].add((r.entity_type, r.entity_id))
-    except Exception as e:  # lineage not enabled / not granted: fall back to apply-with-retry
-        print("Lineage lookup unavailable, skipping writer check:", str(e).splitlines()[0][:200])
+    except Exception as e:  # lineage not enabled / not granted: Delta history below still runs
+        print("Lineage lookup unavailable:", str(e).splitlines()[0][:200])
+
+    # Delta history names the job behind every recent commit. It has no lag and
+    # also catches writes lineage misses (e.g. inserts with no source table).
+    for c, s, t in by_table:
+        try:
+            for r in spark.sql(
+                f"""SELECT DISTINCT CAST(job.jobId AS STRING) AS job_id
+                    FROM (DESCRIBE HISTORY {q(c, s, t)})
+                    WHERE timestamp >= current_timestamp() - INTERVAL {LOOKBACK} DAYS
+                      AND job.jobId IS NOT NULL"""
+            ).collect():
+                writers[f"{c}.{s}.{t}"].add(("JOB", r.job_id))
+        except Exception:  # views and some pipeline-managed objects have no Delta history
+            pass
+
+    # The apply job's own COMMENT commits show up in history; never wait on ourselves.
+    for k in writers:
+        writers[k].discard(("JOB", SELF_JOB_ID))
 
 _activity: dict[tuple, str | None] = {}
 
