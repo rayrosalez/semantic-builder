@@ -42,10 +42,10 @@ export default function App() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [toast, setToast] = useState<string | null>(null);
   const [hoverChild, setHoverChild] = useState<string | null>(null);
-  const [view, setView] = useState<"explore" | "about">(() => (location.hash === "#about" ? "about" : "explore"));
+  const [view, setView] = useState<"explore" | "about">(() => (location.hash === "#explore" ? "explore" : "about"));
 
   useEffect(() => {
-    history.replaceState(null, "", view === "about" ? "#about" : location.pathname);
+    history.replaceState(null, "", view === "explore" ? "#explore" : location.pathname);
   }, [view]);
   const [error, setError] = useState<string | null>(null);
   const toastRef = useRef<HTMLDivElement>(null);
