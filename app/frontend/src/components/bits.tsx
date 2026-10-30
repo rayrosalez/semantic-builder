@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { animate } from "animejs";
+import { api, type ApplySchedule } from "../api";
 import { health, healthColor, initials, pct, statusLabel } from "../theme";
 
 /** Small (i) icon that reveals an explanation on hover or focus. */
@@ -102,4 +103,44 @@ export function useSlideIn<T extends HTMLElement>(from: "left" | "right" | "up",
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
   return ref;
+}
+
+let schedulePromise: Promise<ApplySchedule | null> | null = null;
+
+/** The apply job's schedule (fetched once per page load and shared). */
+export function useApplySchedule(): ApplySchedule | null {
+  const [s, setS] = useState<ApplySchedule | null>(null);
+  useEffect(() => {
+    schedulePromise ??= api.applySchedule().catch(() => null);
+    schedulePromise.then(setS);
+  }, []);
+  return s;
+}
+
+/** "Sun, Nov 1, 1:00 AM CST", in the apply job's own timezone. */
+export function formatWindow(s: ApplySchedule | null): string | null {
+  if (!s?.next_run) return null;
+  return new Date(s.next_run).toLocaleString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone: s.timezone ?? undefined,
+    timeZoneName: "short",
+  });
+}
+
+/** What to say about an approved request that hasn't landed yet. In window mode a
+ *  deferral ("Waiting: job 123 is running") just means "next window", so say when. */
+export function applyNote(
+  r: { status: string; apply_message: string | null },
+  s: ApplySchedule | null,
+): { text: string; title?: string } | null {
+  if (r.status === "APPROVED" && s?.mode === "window" && (!r.apply_message || r.apply_message.startsWith("Waiting"))) {
+    const next = formatWindow(s);
+    const text = next ? `Next window: ${next}` : s.paused ? "Apply window is paused" : "Waiting for the next window";
+    return { text, title: r.apply_message ?? undefined };
+  }
+  return r.apply_message ? { text: r.apply_message } : null;
 }

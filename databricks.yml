@@ -46,6 +46,66 @@ variables:
   check_writers:
     description: Defer changes while a job/pipeline that writes the table is running ("true"/"false")
     default: "true"
+  apply_mode:
+    description: >-
+      defer = per table, wait for a gap between writer runs (default).
+      window = maintenance window: pause writer jobs, wait for in-flight runs, apply, restore.
+    default: defer
+  max_wait_minutes:
+    description: Window mode. How long to wait for writer runs already in flight before deferring their tables
+    default: "30"
+  apply_dry_run:
+    description: Print planned DDL and pauses without changing anything ("true"/"false")
+    default: "false"
+  pause_pipelines:
+    description: Window mode. Stop (and afterwards restart) continuous pipelines that write in-scope tables
+    default: "false"
+
+  # Dictionary import (jobs/import_dictionary.py)
+  dictionary_table:
+    description: Fully qualified name of the customer's data-dictionary Delta table ("" = import disabled)
+    default: ""
+  dictionary_column_map:
+    description: >-
+      JSON mapping our field names to the dictionary table's column names. A NULL
+      column value means the row is the table description.
+    default: '{"catalog": "catalog_name", "schema": "schema_name", "table": "table_name", "column": "column_name", "description": "description", "plan_id": "plan_id", "week_of": "week_of"}'
+  import_cron:
+    description: Quartz cron for the dictionary import (default daily 6:00 AM)
+    default: "0 0 6 * * ?"
+  import_timezone:
+    default: America/Chicago
+  import_pause_status:
+    description: UNPAUSED or PAUSED
+    default: UNPAUSED
+  import_dry_run:
+    description: Print per-table counts without queueing anything ("true"/"false")
+    default: "false"
+
+  # Optional YAML export + GitHub pull request (jobs/export_yaml.py)
+  github_export_enabled:
+    description: Add the YAML export/PR step after each apply run ("true"/"false")
+    default: "false"
+  github_repo:
+    description: owner/repo that receives the pull requests
+    default: ""
+  github_base_branch:
+    default: main
+  github_path_template:
+    description: File path per schema; {catalog} and {schema} are substituted
+    default: "metadata/{schema}.yaml"
+  github_api_url:
+    description: GitHub REST API base (GitHub Enterprise Server is https://<host>/api/v3)
+    default: https://api.github.com
+  github_secret_scope:
+    description: Secret scope holding the GitHub token
+    default: ""
+  github_secret_key:
+    description: Secret key of the GitHub token in github_secret_scope
+    default: ""
+  export_targets:
+    description: 'JSON for the YAML targets block, e.g. {"dev": {"catalog": "c_dev", "schema": "s"}}'
+    default: ""
   demo_catalog:
     description: Catalog for the optional sample estate (seed job only)
     default: ""
@@ -92,3 +152,59 @@ targets:
     # in-scope tables, instead of the deploying user.
     # run_as:
     #   service_principal_name: <APPLY_SP_APPLICATION_ID>
+
+  # ---------------- First American ----------------
+  # Values marked <...> must come from First American. All three targets apply
+  # in a weekly maintenance window: Sunday 1:00 AM US Central (America/Chicago
+  # follows DST, so it is always 1 AM local). The window pauses the writer jobs,
+  # so the apply job's identity needs CAN_MANAGE on them (see README).
+  # Before the first real run: deploy with apply_dry_run: "true", run the apply
+  # job once, and read its output.
+
+  fa_dev:
+    workspace:
+      host: https://<FA_DEV_WORKSPACE_HOST>
+    variables:
+      warehouse_id: <FA_DEV_SQL_WAREHOUSE_ID>
+      scope: st2_lakehouse_dev.ewb_salesforce_uat
+      staging_catalog: <FA_DEV_STAGING_CATALOG>
+      approvers: <FA_APPROVERS_GROUP>
+      dictionary_table: <FA_DEV_DICTIONARY_TABLE>
+      apply_mode: window
+      apply_cron: "0 0 1 ? * SUN"
+      apply_timezone: America/Chicago
+      export_targets: &fa_export_targets '{"dev": {"catalog": "st2_lakehouse_dev", "schema": "ewb_salesforce_uat"}, "nonprod": {"catalog": "st2_lakehouse_nonprod", "schema": "ewb_salesforce_uat"}, "prod": {"catalog": "st2_lakehouse_prod", "schema": "ewb_salesforce_prod"}}'
+    # run_as:
+    #   service_principal_name: <FA_DEV_APPLY_SP_APPLICATION_ID>
+
+  fa_nonprod:
+    workspace:
+      host: https://<FA_NONPROD_WORKSPACE_HOST>
+    variables:
+      warehouse_id: <FA_NONPROD_SQL_WAREHOUSE_ID>
+      scope: st2_lakehouse_nonprod.ewb_salesforce_uat
+      staging_catalog: <FA_NONPROD_STAGING_CATALOG>
+      approvers: <FA_APPROVERS_GROUP>
+      dictionary_table: <FA_NONPROD_DICTIONARY_TABLE>
+      apply_mode: window
+      apply_cron: "0 0 1 ? * SUN"
+      apply_timezone: America/Chicago
+      export_targets: *fa_export_targets
+    # run_as:
+    #   service_principal_name: <FA_NONPROD_APPLY_SP_APPLICATION_ID>
+
+  fa_prod:
+    workspace:
+      host: https://<FA_PROD_WORKSPACE_HOST>
+    variables:
+      warehouse_id: <FA_PROD_SQL_WAREHOUSE_ID>
+      scope: st2_lakehouse_prod.ewb_salesforce_prod
+      staging_catalog: <FA_PROD_STAGING_CATALOG>
+      approvers: <FA_APPROVERS_GROUP>
+      dictionary_table: <FA_PROD_DICTIONARY_TABLE>
+      apply_mode: window
+      apply_cron: "0 0 1 ? * SUN"
+      apply_timezone: America/Chicago
+      export_targets: *fa_export_targets
+    # run_as:
+    #   service_principal_name: <FA_PROD_APPLY_SP_APPLICATION_ID>

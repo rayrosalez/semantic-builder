@@ -5,6 +5,7 @@ information_schema; edits are queued as change requests in a Delta table and
 applied later by a scheduled job, after approval.
 """
 import os
+import time
 
 from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -15,6 +16,7 @@ from server.config import (
     ALLOW_SELF_APPROVAL,
     APP_TITLE,
     APPLY_JOB_ID,
+    APPLY_MODE,
     COVERAGE_TARGET,
     SCOPE,
     STAGING_TABLE,
@@ -22,6 +24,7 @@ from server.config import (
     workspace_host,
 )
 from server.identity import current_user, is_approver
+from server.schedule import next_fire
 
 app = FastAPI(title=APP_TITLE)
 
@@ -65,8 +68,34 @@ def config():
         "coverage_target": COVERAGE_TARGET,
         "allow_self_approval": ALLOW_SELF_APPROVAL,
         "apply_job_id": APPLY_JOB_ID or None,
+        "apply_mode": APPLY_MODE,
         "workspace_host": workspace_host(),
     }
+
+
+_schedule_cache: dict = {}
+
+
+@app.get("/api/apply/schedule")
+def apply_schedule():
+    """The apply job's schedule and its next run, read from the job itself."""
+    if not APPLY_JOB_ID:
+        return {"mode": APPLY_MODE, "next_run": None}
+    hit = _schedule_cache.get("v")
+    if hit and time.time() - hit[0] < 300:
+        return hit[1]
+    out = {"mode": APPLY_MODE, "next_run": None, "cron": None, "timezone": None, "paused": None}
+    try:
+        sched = get_workspace_client().jobs.get(int(APPLY_JOB_ID)).settings.schedule
+        if sched:
+            paused = bool(sched.pause_status and sched.pause_status.value == "PAUSED")
+            nxt = None if paused else next_fire(sched.quartz_cron_expression, sched.timezone_id)
+            out.update(cron=sched.quartz_cron_expression, timezone=sched.timezone_id, paused=paused,
+                       next_run=nxt.isoformat() if nxt else None)
+    except Exception as e:  # job missing or not visible: the UI falls back to the raw message
+        out["error"] = str(e)[:200]
+    _schedule_cache["v"] = (time.time(), out)
+    return out
 
 
 # ---------- graph ----------
@@ -111,10 +140,16 @@ def submit(request: Request, body: dict = Body(...)):
 
 
 @app.get("/api/changes")
-def list_changes(request: Request, status: str = Query(""), mine: bool = False, limit: int = 200):
+def list_changes(request: Request, status: str = Query(""), mine: bool = False, limit: int = 200,
+                 batch_id: str | None = None):
     statuses = [s.strip().upper() for s in status.split(",") if s.strip()]
     requested_by = current_user(request)["email"] if mine else None
-    return changes.list_requests(statuses or None, requested_by, min(limit, 1000))
+    return changes.list_requests(statuses or None, requested_by, min(limit, 1000), batch_id)
+
+
+@app.get("/api/changes/batches")
+def list_batches():
+    return changes.batches("PENDING")
 
 
 @app.get("/api/changes/summary")
@@ -131,6 +166,13 @@ def history(catalog: str, schema: str, table: str, column: str | None = None):
 def review(request: Request, body: dict = Body(...)):
     user = _require_approver(request)
     return changes.review(user["email"], body.get("ids", []), body.get("decision", ""), body.get("note"))
+
+
+@app.post("/api/changes/review_batch")
+def review_batch(request: Request, body: dict = Body(...)):
+    user = _require_approver(request)
+    return changes.review_batch(user["email"], body.get("batch_id", ""), body.get("decision", ""),
+                                body.get("note"))
 
 
 @app.post("/api/changes/{request_id}/withdraw")

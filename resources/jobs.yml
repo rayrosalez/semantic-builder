@@ -3,9 +3,10 @@ resources:
     semantic_builder_apply:
       name: semantic-builder-apply
       description: >-
-        Applies approved description changes to Unity Catalog. Defers tables whose
-        writers are running, batches each table's edits into one commit, and records
-        the outcome in the change queue.
+        Applies approved description changes to Unity Catalog. In defer mode it skips
+        tables whose writers are running; in window mode it pauses the writer jobs,
+        waits for in-flight runs, applies, and restores them. Batches each table's
+        edits into one commit and records the outcome in the change queue.
       max_concurrent_runs: 1
       schedule:
         quartz_cron_expression: ${var.apply_cron}
@@ -21,6 +22,78 @@ resources:
               - --staging_schema=${var.staging_schema}
               - --check_writers=${var.check_writers}
               - --self_job_id={{job.id}}
+              - --run_id={{job.run_id}}
+              - --mode=${var.apply_mode}
+              - --max_wait_minutes=${var.max_wait_minutes}
+              - --dry_run=${var.apply_dry_run}
+              - --pause_pipelines=${var.pause_pipelines}
+
+        # Backstop: if apply_changes dies mid-window, put every paused writer back.
+        - task_key: restore_writers
+          depends_on:
+            - task_key: apply_changes
+          run_if: ALL_DONE
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/restore_writers.py
+            parameters:
+              - --staging_catalog=${var.staging_catalog}
+              - --staging_schema=${var.staging_schema}
+
+        # Optional YAML + GitHub pull request export (github_export_enabled).
+        - task_key: export_enabled
+          depends_on:
+            - task_key: apply_changes
+          condition_task:
+            op: EQUAL_TO
+            left: ${var.github_export_enabled}
+            right: "true"
+        - task_key: export_yaml
+          depends_on:
+            - task_key: export_enabled
+              outcome: "true"
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/export_yaml.py
+            parameters:
+              - --staging_catalog=${var.staging_catalog}
+              - --staging_schema=${var.staging_schema}
+              - --scope=${var.scope}
+              - --run_id={{job.run_id}}
+              - --github_repo=${var.github_repo}
+              - --github_base_branch=${var.github_base_branch}
+              - --github_path_template=${var.github_path_template}
+              - --github_api_url=${var.github_api_url}
+              - --github_secret_scope=${var.github_secret_scope}
+              - --github_secret_key=${var.github_secret_key}
+              - --export_targets=${var.export_targets}
+      environments:
+        - environment_key: default
+          spec:
+            environment_version: "4"
+
+    semantic_builder_import:
+      name: semantic-builder-import
+      description: >-
+        Loads the customer's data-dictionary table into the change queue as PENDING
+        requests (one batch per plan_id) for approvers to review before the window.
+      max_concurrent_runs: 1
+      schedule:
+        quartz_cron_expression: ${var.import_cron}
+        timezone_id: ${var.import_timezone}
+        pause_status: ${var.import_pause_status}
+      tasks:
+        - task_key: import_dictionary
+          environment_key: default
+          spark_python_task:
+            python_file: ../jobs/import_dictionary.py
+            parameters:
+              - --staging_catalog=${var.staging_catalog}
+              - --staging_schema=${var.staging_schema}
+              - --dictionary_table=${var.dictionary_table}
+              - --column_map=${var.dictionary_column_map}
+              - --scope=${var.scope}
+              - --dry_run=${var.import_dry_run}
       environments:
         - environment_key: default
           spec:
@@ -28,7 +101,7 @@ resources:
 
     semantic_builder_setup:
       name: semantic-builder-setup
-      description: Creates the change queue table and grants the app's service principal access.
+      description: Creates the change queue and paused-writers tables and grants the app's service principal access.
       tasks:
         - task_key: setup
           environment_key: default

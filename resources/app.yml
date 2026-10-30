@@ -32,3 +32,5 @@ resources:
             value: ${var.allow_self_approval}
           - name: SB_COVERAGE_TARGET
             value: ${var.coverage_target}
+          - name: SB_APPLY_MODE
+            value: ${var.apply_mode}
