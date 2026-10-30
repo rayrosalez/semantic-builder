@@ -11,15 +11,12 @@ job (jobs/apply_changes.py) is the single writer of real metadata.
 import uuid
 
 from . import catalog as cat
-from . import sql
+from . import queue_sql, sql
 from .config import ALLOW_SELF_APPROVAL, STAGING_TABLE, schema_in_scope
 
-OPEN = ("PENDING", "APPROVED")
+OPEN = queue_sql.OPEN
 
-_COLUMNS = """request_id, batch_id, entity_type, catalog_name, schema_name, table_name,
-    column_name, table_type, field, previous_value, proposed_value, note, status,
-    requested_by, requested_at, reviewed_by, reviewed_at, review_note, force_apply,
-    apply_attempts, deferrals, last_attempt_at, apply_message, applied_at, updated_at"""
+_COLUMNS = queue_sql.COLUMNS
 
 
 def _in_list(prefix: str, values: list[str]) -> tuple[str, dict]:
@@ -43,48 +40,28 @@ def submit(user: str, changes: list[dict], note: str | None) -> dict:
     live = {None: detail["comment"], **{c["column_name"]: c["comment"] for c in detail["columns"]}}
 
     batch_id = str(uuid.uuid4())
-    rows, params, request_ids = [], {}, []
-    for i, ch in enumerate(changes):
+    note = (note or "").strip() or None
+    rows = []
+    for ch in changes:
         column = ch.get("column") or None
         if column not in live:
             raise LookupError(f"Column {column} not found on {table}")
         proposed = (ch.get("proposed_value") or "").strip()
         if proposed == (live[column] or "").strip():
             continue
-        rid = str(uuid.uuid4())
-        request_ids.append(rid)
-        p = f"r{i}_"
-        params.update({
-            f"{p}id": rid, f"{p}type": "COLUMN" if column else "TABLE", f"{p}col": column,
-            f"{p}prev": live[column], f"{p}new": proposed,
+        rows.append({
+            "request_id": str(uuid.uuid4()), "batch_id": batch_id,
+            "catalog": catalog, "schema": schema, "table": table, "column": column,
+            "table_type": detail["table_type"], "previous_value": live[column],
+            "proposed_value": proposed, "note": note, "requested_by": user,
         })
-        rows.append(
-            f"(:{p}id, :batch, :{p}type, :catalog, :schema, :table, :{p}col, :ttype, 'COMMENT', "
-            f":{p}prev, :{p}new, :note, 'PENDING', :user, current_timestamp(), NULL, NULL, NULL, "
-            f"false, 0, 0, NULL, NULL, NULL, current_timestamp())"
-        )
     if not rows:
         return {"submitted": 0, "request_ids": []}
 
-    params.update({"batch": batch_id, "catalog": catalog, "schema": schema, "table": table,
-                   "ttype": detail["table_type"], "note": (note or "").strip() or None, "user": user})
-
-    cols = [params[f"r{i}_col"] for i in range(len(changes)) if f"r{i}_col" in params]
-    col_filter = " OR ".join(
-        "column_name IS NULL" if c is None else f"column_name = :sc{j}" for j, c in enumerate(cols)
-    )
-    sql.query(f"""
-        UPDATE {STAGING_TABLE}
-        SET status = 'SUPERSEDED', updated_at = current_timestamp(),
-            apply_message = 'Superseded by a newer request'
-        WHERE catalog_name = :catalog AND schema_name = :schema AND table_name = :table
-          AND status IN ('PENDING', 'APPROVED') AND ({col_filter})
-    """, {"catalog": catalog, "schema": schema, "table": table,
-          **{f"sc{j}": c for j, c in enumerate(cols) if c is not None}})
-
-    sql.query(f"INSERT INTO {STAGING_TABLE} ({_COLUMNS}) VALUES {', '.join(rows)}", params)
+    for statement, params in queue_sql.submit_statements(STAGING_TABLE, rows):
+        sql.query(statement, params)
     cat.invalidate("open_counts")
-    return {"submitted": len(rows), "batch_id": batch_id, "request_ids": request_ids}
+    return {"submitted": len(rows), "batch_id": batch_id, "request_ids": [r["request_id"] for r in rows]}
 
 
 def review(user: str, ids: list[str], decision: str, note: str | None) -> dict:
@@ -112,6 +89,45 @@ def review(user: str, ids: list[str], decision: str, note: str | None) -> dict:
     """, params)
     cat.invalidate("open_counts")
     return {"updated": res[0].get("num_affected_rows", 0) if res else 0, "skipped_self": skipped}
+
+
+def review_batch(user: str, batch_id: str, decision: str, note: str | None) -> dict:
+    """Approve or reject every PENDING request in one batch (e.g. a dictionary import)."""
+    if decision not in ("approve", "reject"):
+        raise ValueError("decision must be approve or reject")
+    if not batch_id:
+        raise ValueError("batch_id is required")
+    note = (note or "").strip() or None
+    skipped = 0
+    if not ALLOW_SELF_APPROVAL:
+        skipped = sql.query(f"""
+            SELECT count(*) AS n FROM {STAGING_TABLE}
+            WHERE batch_id = :batch AND status = 'PENDING' AND requested_by = :user
+        """, {"batch": batch_id, "user": user})[0]["n"]
+    statement, params = queue_sql.review_batch(
+        STAGING_TABLE, batch_id, "APPROVED" if decision == "approve" else "REJECTED",
+        user, note, ALLOW_SELF_APPROVAL)
+    res = sql.query(statement, params)
+    cat.invalidate("open_counts")
+    return {"updated": res[0].get("num_affected_rows", 0) if res else 0, "skipped_self": skipped}
+
+
+def batches(status: str = "PENDING") -> list[dict]:
+    """One row per batch with open requests: who/what it came from and its size.
+    Counts come from the whole queue, not the (limited) request list."""
+    return sql.query(f"""
+        SELECT batch_id, min(requested_by) AS requested_by, max(note) AS note,
+               count(*) AS requests,
+               count(DISTINCT catalog_name, schema_name, table_name) AS tables,
+               count_if(column_name IS NOT NULL) AS columns,
+               count_if(column_name IS NULL) AS table_descriptions,
+               min(requested_at) AS first_requested_at
+        FROM {STAGING_TABLE}
+        WHERE status = :status
+        GROUP BY batch_id
+        ORDER BY first_requested_at DESC
+        LIMIT 100
+    """, {"status": status})
 
 
 def withdraw(user: str, request_id: str) -> int:
@@ -144,8 +160,12 @@ def retry(request_id: str) -> int:
     return res[0].get("num_affected_rows", 0) if res else 0
 
 
-def list_requests(statuses: list[str] | None, requested_by: str | None, limit: int = 200) -> list[dict]:
+def list_requests(statuses: list[str] | None, requested_by: str | None, limit: int = 200,
+                  batch_id: str | None = None) -> list[dict]:
     where, params = [], {"limit": str(limit)}
+    if batch_id:
+        where.append("batch_id = :batch")
+        params["batch"] = batch_id
     if statuses:
         in_sql, p = _in_list("st", statuses)
         where.append(f"status IN ({in_sql})")

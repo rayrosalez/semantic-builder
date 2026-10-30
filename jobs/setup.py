@@ -56,6 +56,18 @@ COMMENT 'Semantic Builder change queue: who changed which description, from what
 TBLPROPERTIES ('delta.enableDeletionVectors' = 'true', 'delta.enableRowTracking' = 'true')
 """)
 
+spark.sql(f"""
+CREATE TABLE IF NOT EXISTS {cat}.{sch}.`paused_writers` (
+  apply_run_id          STRING    COMMENT 'Apply job run that paused it',
+  job_id                STRING    COMMENT 'Job id, or pipeline id when setting_kind = pipeline',
+  setting_kind          STRING    COMMENT 'schedule, trigger or continuous (job), or pipeline (stopped continuous pipeline)',
+  original_pause_status STRING    COMMENT 'State before the window (UNPAUSED for jobs, RUNNING for pipelines); restored to this',
+  paused_at             TIMESTAMP COMMENT 'When the apply job paused it (the row is written just before)',
+  restored_at           TIMESTAMP COMMENT 'When it was put back; NULL means still paused by the apply job'
+)
+COMMENT 'Semantic Builder maintenance windows: writer jobs/pipelines paused by the apply job, and whether they were restored'
+""")
+
 grants = [
     f"GRANT USE CATALOG ON CATALOG {cat} TO {sp}",
     f"GRANT USE SCHEMA, SELECT, MODIFY ON SCHEMA {cat}.{sch} TO {sp}",

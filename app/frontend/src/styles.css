@@ -1147,6 +1147,37 @@ a {
 .q-actions:empty {
   display: none;
 }
+.batches {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.batch-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--blue);
+  border-radius: 8px;
+  background: var(--paper);
+}
+.batch-card.on {
+  background: rgba(10, 49, 97, 0.06);
+}
+.batch-main {
+  flex: 1;
+  min-width: 0;
+}
+.batch-title {
+  font-size: 13px;
+  font-weight: 500;
+}
+.batch-buttons {
+  display: flex;
+  gap: 8px;
+}
 
 /* info popover */
 .info {

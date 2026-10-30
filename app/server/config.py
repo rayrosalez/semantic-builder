@@ -11,6 +11,8 @@ from functools import lru_cache
 
 from databricks.sdk import WorkspaceClient
 
+from . import queue_sql
+
 IS_DATABRICKS_APP = bool(os.environ.get("DATABRICKS_APP_NAME"))
 
 WAREHOUSE_ID = os.environ.get("DATABRICKS_WAREHOUSE_ID", "")
@@ -22,7 +24,7 @@ STAGING_TABLE = f"`{STAGING_CATALOG}`.`{STAGING_SCHEMA}`.`metadata_change_reques
 
 # Which objects the business can see and edit. Comma-separated entries of
 #   catalog | catalog.schema | catalog.schema_glob*   (e.g. "finance, ops.claims_*")
-SCOPE = [s.strip() for s in os.environ.get("SB_SCOPE", "").split(",") if s.strip()]
+SCOPE = queue_sql.parse_scope(os.environ.get("SB_SCOPE", ""))
 
 # Approvers: comma-separated user emails and/or workspace group names.
 APPROVERS = [s.strip() for s in os.environ.get("SB_APPROVERS", "").split(",") if s.strip()]
@@ -33,6 +35,10 @@ COVERAGE_TARGET = float(os.environ.get("SB_COVERAGE_TARGET", "0.8"))
 
 # Job id of the apply job (the bundle wires it in) — enables "Apply now".
 APPLY_JOB_ID = os.environ.get("SB_APPLY_JOB_ID", "")
+
+# How the apply job runs: "defer" (wait for a gap per table) or "window"
+# (scheduled maintenance window that pauses the writer jobs).
+APPLY_MODE = os.environ.get("SB_APPLY_MODE", "defer")
 
 APP_TITLE = os.environ.get("SB_APP_TITLE", "Semantic Builder")
 
@@ -47,15 +53,7 @@ def scope_catalogs() -> list[str]:
 
 
 def schema_in_scope(catalog: str, schema: str) -> bool:
-    if schema == "information_schema":
-        return False
-    for entry in SCOPE:
-        parts = entry.split(".", 1)
-        if parts[0] != catalog:
-            continue
-        if len(parts) == 1 or fnmatch.fnmatch(schema, parts[1]):
-            return True
-    return False
+    return queue_sql.schema_in_scope(SCOPE, catalog, schema)
 
 
 def table_visible(name: str) -> bool:

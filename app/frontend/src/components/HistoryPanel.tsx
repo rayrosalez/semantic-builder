@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { animate, stagger } from "animejs";
 import { api, type ChangeRequest } from "../api";
 import { when } from "../theme";
-import { Avatar, CloseButton, StatusChip, useSlideIn } from "./bits";
+import { applyNote, Avatar, CloseButton, StatusChip, useApplySchedule, useSlideIn } from "./bits";
 
 export interface HistoryTarget {
   catalog: string;
@@ -53,6 +53,7 @@ export function HistoryPanel({ target, refreshKey, onClose }: { target: HistoryT
   const listRef = useRef<HTMLOListElement>(null);
   const [items, setItems] = useState<ChangeRequest[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const schedule = useApplySchedule();
 
   useEffect(() => {
     setItems(null);
@@ -132,12 +133,15 @@ export function HistoryPanel({ target, refreshKey, onClose }: { target: HistoryT
                       Applied to Unity Catalog <span className="muted">{when(r.applied_at)}</span>
                     </li>
                   )}
-                  {r.apply_message && r.apply_message !== "Applied" && (
-                    <li className="muted small">
-                      <span className={`ev-dot ${r.status === "FAILED" ? "red" : "fog"}`} />
-                      {r.apply_message}
-                    </li>
-                  )}
+                  {(() => {
+                    const note = applyNote(r, schedule);
+                    return note && note.text !== "Applied" ? (
+                      <li className="muted small" title={note.title}>
+                        <span className={`ev-dot ${r.status === "FAILED" ? "red" : "fog"}`} />
+                        {note.text}
+                      </li>
+                    ) : null;
+                  })()}
                 </ul>
               </div>
             </li>

@@ -113,7 +113,27 @@ export interface AppConfig {
   coverage_target: number;
   allow_self_approval: boolean;
   apply_job_id: string | null;
+  apply_mode: "defer" | "window";
   workspace_host: string;
+}
+
+export interface ApplySchedule {
+  mode: "defer" | "window";
+  next_run: string | null;
+  cron?: string | null;
+  timezone?: string | null;
+  paused?: boolean | null;
+}
+
+export interface Batch {
+  batch_id: string;
+  requested_by: string;
+  note: string | null;
+  requests: number;
+  tables: number;
+  columns: number;
+  table_descriptions: number;
+  first_requested_at: string;
 }
 
 export interface ApplyRun {
@@ -170,8 +190,17 @@ export const api = {
   refresh: () => post<{ ok: boolean }>("/api/refresh"),
   submit: (changes: Edit[], note: string) =>
     post<{ submitted: number }>("/api/changes", { changes, note }),
-  changes: (status: string, mine = false) =>
-    call<ChangeRequest[]>(`/api/changes?status=${enc(status)}&mine=${mine}`),
+  changes: (status: string, mine = false, batchId?: string) =>
+    call<ChangeRequest[]>(
+      `/api/changes?status=${enc(status)}&mine=${mine}` + (batchId ? `&batch_id=${enc(batchId)}` : ""),
+    ),
+  batches: () => call<Batch[]>("/api/changes/batches"),
+  reviewBatch: (batchId: string, decision: "approve" | "reject", note: string) =>
+    post<{ updated: number; skipped_self: number }>("/api/changes/review_batch", {
+      batch_id: batchId,
+      decision,
+      note,
+    }),
   summary: () => call<Record<string, number>>("/api/changes/summary"),
   history: (c: string, s: string, t: string, column: string | null) =>
     call<ChangeRequest[]>(
@@ -184,5 +213,6 @@ export const api = {
   force: (id: string) => post<{ updated: number }>(`/api/changes/${enc(id)}/force`),
   retry: (id: string) => post<{ updated: number }>(`/api/changes/${enc(id)}/retry`),
   applyRuns: () => call<ApplyRun[]>("/api/apply/runs"),
+  applySchedule: () => call<ApplySchedule>("/api/apply/schedule"),
   applyNow: () => post<{ run_id: number }>("/api/apply/run"),
 };

@@ -3,7 +3,7 @@ import { animate, stagger } from "animejs";
 import type { ColumnDetail, EntityState, TableDetail } from "../api";
 import { api } from "../api";
 import { health, healthColor, pct, when } from "../theme";
-import { CloseButton, Coverage, HistoryIcon, Info, StatusChip, useSlideIn } from "./bits";
+import { applyNote, CloseButton, Coverage, HistoryIcon, Info, StatusChip, useApplySchedule, useSlideIn } from "./bits";
 
 const TABLE_KEY = "__table__";
 
@@ -210,6 +210,8 @@ function Field(props: {
     }
   }, [value]);
   const open = entity.open_request;
+  const schedule = useApplySchedule();
+  const note = open ? applyNote(open, schedule) : null;
   const missing = !live?.trim() && !open && !dirty;
   return (
     <div className={`field ${missing ? "missing" : ""} ${dirty ? "dirty" : ""} ${active ? "active" : ""} ${big ? "big" : ""}`}>
@@ -237,7 +239,7 @@ function Field(props: {
       {open && !dirty && (
         <div className="field-foot muted">
           proposed by {open.requested_by.split("@")[0]} {when(open.requested_at)}
-          {open.apply_message && open.status === "APPROVED" && <> · {open.apply_message}</>}
+          {open.status === "APPROVED" && note && <span title={note.title}> · {note.text}</span>}
         </div>
       )}
     </div>
